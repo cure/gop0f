@@ -3,10 +3,9 @@ package gop0f
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
+	"net/netip"
 )
 
 // Ported from p0f/api.h
@@ -22,8 +21,11 @@ const (
 )
 
 var (
-	P0F_QUERY_MAGIC = [...]byte{0x50, 0x30, 0x46, 0x1} //0x50304601
-	P0F_RESP_MAGIC  = [...]byte{0x50, 0x30, 0x46, 0x2} //0x50304602
+	// The doc (https://lcamtuf.coredump.cx/p0f3/) says this should be network
+	// (i.e. big) endian, but that appears to be incorrect, it needs to be little
+	// endian, at least when the p0f service runs on a little-endian system.
+	P0F_QUERY_MAGIC = [...]byte{0x01, 0x46, 0x30, 0x50} //0x50304601
+	P0F_RESP_MAGIC  = [...]byte{0x02, 0x46, 0x30, 0x50} //0x50304602
 )
 
 type GoP0f struct {
@@ -47,7 +49,7 @@ type P0fResponse struct {
 	UpModDays  uint32                // Uptime modulo (days)
 	LastNat    uint32                // NAT / LB last detected (unix time)
 	LastChg    uint32                // OS chg last detected (unix time)
-	Distance   uint32                // System distance
+	Distance   uint16                // System distance
 	BadSw      byte                  // Host is lying about U-A / Server
 	OsMatchQ   byte                  // Match quality
 	OsName     [P0F_STR_MAX + 1]byte // Name of detected OS
@@ -59,8 +61,6 @@ type P0fResponse struct {
 }
 
 func New(sock string) (p0f *GoP0f, err error) {
-	by, _ := hex.DecodeString("0x50304601")
-	fmt.Printf("%+v\n", by)
 	p0f = &GoP0f{
 		socket: sock,
 	}
@@ -77,14 +77,12 @@ func (p0f *GoP0f) Close() {
 	p0f.conn.Close()
 }
 
-func (p0f *GoP0f) Query(addr net.IP) (resp P0fResponse, err error) {
-	var querybuf bytes.Buffer
-	binary.Write(&querybuf, binary.BigEndian, newP0fQuery(addr))
-
-	qq := querybuf.Bytes()
-
-	fmt.Printf("%+v\n", qq)
-	_, err = p0f.conn.Write(qq)
+func (p0f *GoP0f) Query(srcAddr netip.Addr) (output string, err error) {
+	var resp P0fResponse
+	q := newP0fQuery(srcAddr)
+	//fmt.Printf("Sending MAGIC %#08x\n", q.Magic)
+	//fmt.Printf("%+x\n", q)
+	err = binary.Write(p0f.conn, binary.BigEndian, q)
 	if err != nil {
 		return
 	}
@@ -95,57 +93,53 @@ func (p0f *GoP0f) Query(addr net.IP) (resp P0fResponse, err error) {
 	if err != nil {
 		return
 	}
-	fmt.Printf("Client got: %+v", readbuf[0:n])
+	//fmt.Printf("Client got: %+v\n", readbuf[0:n])
 	buf := bytes.NewReader(readbuf[0:n])
-	err = binary.Read(buf, binary.BigEndian, &resp)
+	err = binary.Read(buf, binary.LittleEndian, &resp)
 	if err != nil {
-		log.Fatal(err)
+		output = fmt.Sprintf("%+v", err)
+		return
 	}
-	log.Printf("%#v\n", resp)
+	if resp.Magic != binary.LittleEndian.Uint32(P0F_RESP_MAGIC[:]) {
+		output = fmt.Sprintf("Invalid response magic field: %x", resp.Magic)
+		return
+	}
+	if resp.Status != P0F_STATUS_OK {
+		if resp.Status == P0F_STATUS_BADQUERY {
+			output = "Bad query"
+		} else if resp.Status == P0F_STATUS_NOMATCH {
+			output = "No match"
+		} else {
+			output = "Unknown error"
+		}
+		return
+	}
+	//fmt.Printf("%#v\n", resp)
+	//fmt.Printf("%#v\n", resp.Magic)
+
+	n = bytes.IndexByte(resp.OsName[:], 0)
+	output += fmt.Sprintf("%s", string(resp.OsName[:n]))
+	n = bytes.IndexByte(resp.OsFlavor[:], 0)
+	if n > 0 {
+		output += fmt.Sprintf(" %s", string(resp.OsFlavor[:n]))
+	}
+	if resp.OsMatchQ == P0F_MATCH_FUZZY {
+		output += " [fuzzy]"
+	} else if resp.OsMatchQ == P0F_MATCH_GENERIC {
+		output += " [generic]"
+	}
 	return
 }
 
-func newP0fQuery(addr net.IP) *P0fQuery {
+func newP0fQuery(addr netip.Addr) *P0fQuery {
 	q := &P0fQuery{
-		Magic:    P0F_QUERY_MAGIC,
-		AddrType: P0F_ADDR_IPV4,
+		Magic: P0F_QUERY_MAGIC,
 	}
-	copy(q.Addr[:], []byte(addr)[:16])
+	if addr.Is4() {
+		q.AddrType = P0F_ADDR_IPV4
+	} else {
+		q.AddrType = P0F_ADDR_IPV6
+	}
+	copy(q.Addr[:], addr.AsSlice())
 	return q
 }
-
-/*
-func reader(r io.Reader) {
-    buf := make([]byte, 1024)
-    for {
-      n, err := r.Read(buf[:])
-      if err != nil {
-          return
-      }
-      println("Client got:", string(buf[0:n]))
-      var header Head
-      err = binary.Read(file, binary.LittleEndian, &header)
-      if err != nil {
-          log.Fatal(err)
-      }
-      log.Printf("%#v\n", header)
-    }
-}
-
-func Run() {
-    c, err := net.Dial("unix", "/tmp/echo.sock")
-    if err != nil {
-        panic(err)
-    }
-    defer c.Close()
-
-    go reader(c)
-    for {
-        _, err := c.Write([]byte("hi"))
-        if err != nil {
-            log.Fatal("write error:", err)
-            break
-        }
-        time.Sleep(1e9)
-    }
-}*/

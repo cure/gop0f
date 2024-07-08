@@ -1,10 +1,10 @@
 # Gop0f - Client library for p0f passive fingerprinting
 
-Work in progress! Not passing.
+This is forked from https://github.com/gurre/gop0f (thanks!). I updated the code so that the cli tool is just functional enough to work for querying p0f3.
 
 ## Installing
 ```
-go get github.com/gurre/gop0f
+go get github.com/cure/gop0f
 ```
 
 ## Using
@@ -12,7 +12,7 @@ go get github.com/gurre/gop0f
 Using the library in your service:
 ```
 import (
-  "github.com/gurre/gop0f"
+  "github.com/cure/gop0f"
   "net"
 )
 
@@ -28,7 +28,8 @@ if err != nil {
 
 Using the included cli tool:
 ```
-$ p0f-cli -q 127.0.0.1
+$ ./p0f-cli -q 127.0.0.1)
+Linux 2.2.x-3.x [generic]
 ```
 
 ## Further reading
